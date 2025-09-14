@@ -1,4 +1,4 @@
-name = "v2ray-proxy"
+name = "wor"
 main = "v2ray_proxy_worker.js"
 compatibility_date = "2023-09-01"
 
