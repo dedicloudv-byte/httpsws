@@ -1,0 +1,11 @@
+name = "v2ray-proxy"
+main = "v2ray_proxy_worker.js"
+compatibility_date = "2023-09-01"
+
+# Customize the following settings as needed
+[vars]
+# You can add custom environment variables here if needed
+# EXAMPLE_VAR = "example_value"
+
+[triggers]
+crons = []

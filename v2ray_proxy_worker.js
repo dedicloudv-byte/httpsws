@@ -1,0 +1,358 @@
+// V2Ray Proxy with Cloudflare Workers
+// This script creates a proxy that connects to a V2Ray server with WebSocket + TLS
+
+export default {
+  async fetch(request) {
+    return handleRequest(request);
+  }
+};
+
+async function handleRequest(request) {
+  const headers = new Headers();
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Allow-Methods", "GET, POST");
+  headers.set("Access-Control-Allow-Headers", "Content-Type");
+
+  // Handle WebSocket connections
+  if (request.headers.get("Upgrade") === "websocket") {
+    return handleWebSocket(request);
+  }
+
+  // Handle OPTIONS request (preflight)
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      headers,
+      status: 204
+    });
+  }
+
+  // Handle GET request - serve the configuration UI
+  if (request.method === "GET") {
+    return new Response(renderHTML(), {
+      headers: { "content-type": "text/html;charset=UTF-8" }
+    });
+  } 
+  // Handle POST request - process the config generation
+  else if (request.method === "POST") {
+    const formData = await request.formData();
+    const config = formData.get("config");
+    const cleanIp = formData.get("cleanIp");
+    const workerHost = new URL(request.url).hostname;
+
+    try {
+      const refinedConfig = await refineConfig(config, cleanIp, workerHost);
+      return new Response(JSON.stringify({ refinedConfig }), {
+        headers: { "content-type": "application/json", ...headers }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        headers: { "content-type": "application/json", ...headers },
+        status: 400
+      });
+    }
+  }
+
+  return new Response("Method not allowed", { status: 405 });
+}
+
+// Handle WebSocket connections by forwarding them to the V2Ray server
+async function handleWebSocket(request) {
+  const url = new URL(request.url);
+  // Extract the target hostname from the path
+  const targetHost = url.pathname.replace(/^\/|\/$/, "");
+  
+  if (!targetHost) {
+    return new Response("Invalid WebSocket request", { status: 400 });
+  }
+  
+  // Create a new URL to the target V2Ray server
+  const newUrl = new URL(`wss://${targetHost}`);
+  
+  // Forward the WebSocket connection
+  return fetch(new Request(newUrl, request));
+}
+
+// UI for configuring the proxy
+function renderHTML() {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>V2Ray WebSocket+TLS Proxy</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+      color: #333;
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    
+    h1 {
+      text-align: center;
+      color: #2196F3;
+      font-weight: bold;
+    }
+    
+    label {
+      font-size: 16px;
+      margin-top: 10px;
+      display: block;
+      font-weight: 600;
+      color: #555;
+    }
+    
+    input, textarea {
+      width: 100%;
+      padding: 8px;
+      margin: 8px 0;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 16px;
+      background: #fafafa;
+      transition: all 0.3s;
+    }
+    
+    input:focus, textarea:focus {
+      border-color: #2196F3;
+      outline: none;
+      box-shadow: 0 0 5px rgba(33, 150, 243, 0.5);
+    }
+    
+    textarea {
+      resize: vertical;
+      min-height: 120px;
+    }
+    
+    button {
+      padding: 12px 20px;
+      margin: 10px 0;
+      font-size: 16px;
+      color: white;
+      background: linear-gradient(145deg, #2196F3, #1976D2);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    button:active {
+      transform: translateY(0);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .output-box {
+      position: relative;
+    }
+    
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 8px 12px;
+      font-size: 14px;
+      background: linear-gradient(145deg, #2196F3, #1976D2);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    
+    .copy-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    .copy-btn:active {
+      transform: translateY(0);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    @media (max-width: 768px) {
+      .container {
+        margin: 20px;
+        padding: 15px;
+      }
+      
+      button, .copy-btn {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>V2Ray WebSocket+TLS Proxy</h1>
+    
+    <label for="config">Enter your V2Ray config (VMess, VLESS, or Trojan):</label>
+    <textarea id="config" placeholder="vmess://... or vless://... or trojan://..."></textarea>
+    
+    <label for="clean-ip">Cloudflare Clean IP Address:</label>
+    <input type="text" id="clean-ip" value="104.18.6.41" placeholder="Enter a Cloudflare clean IP">
+    
+    <button id="refine-btn">Generate Proxy Config</button>
+    
+    <h3>Proxy Configuration:</h3>
+    <div class="output-box">
+      <textarea id="refined-config" readonly></textarea>
+      <button class="copy-btn" id="copy-btn">Copy</button>
+    </div>
+  </div>
+  
+  <script>
+    document.getElementById('refine-btn').addEventListener('click', async () => {
+      const config = document.getElementById('config').value.trim();
+      const cleanIp = document.getElementById('clean-ip').value.trim();
+      
+      try {
+        const formData = new FormData();
+        formData.append('config', config);
+        formData.append('cleanIp', cleanIp);
+        
+        const response = await fetch(window.location.href, {
+          method: 'POST',
+          body: formData
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+          document.getElementById('refined-config').value = result.refinedConfig;
+        } else {
+          document.getElementById('refined-config').value = 'Error: ' + result.error;
+        }
+      } catch (error) {
+        document.getElementById('refined-config').value = 'Error: ' + error.message;
+      }
+    });
+    
+    document.getElementById('copy-btn').addEventListener('click', () => {
+      const refinedConfig = document.getElementById('refined-config');
+      refinedConfig.select();
+      document.execCommand('copy');
+      alert('Config copied to clipboard!');
+    });
+  </script>
+</body>
+</html>
+  `;
+}
+
+// Process and refine the V2Ray configuration
+async function refineConfig(config, cleanIp, workerHost) {
+  const allowedPorts = ['443', '8443', '2053', '2083', '2087', '2096'];
+  
+  if (config.startsWith('vmess://')) {
+    return refineVmess(config, cleanIp, workerHost, allowedPorts);
+  } else if (config.startsWith('vless://')) {
+    return refineVless(config, cleanIp, workerHost, allowedPorts);
+  } else if (config.startsWith('trojan://')) {
+    return refineTrojan(config, cleanIp, workerHost, allowedPorts);
+  } else {
+    throw new Error("Invalid config format. Please enter a valid VMess, VLESS, or Trojan config with WebSocket+TLS.");
+  }
+}
+
+// Process VMess configuration
+function refineVmess(config, cleanIp, workerHost, allowedPorts) {
+  const base64Data = config.slice(8); // Remove 'vmess://'
+  const decodedString = atob(base64Data); // Decode base64 string
+  const decoded = JSON.parse(decodedString);
+  
+  if (decoded.net !== 'ws') throw new Error('Network must be WebSocket (ws)');
+  if (decoded.tls !== 'tls') throw new Error('Security must be TLS');
+  
+  // Check if the input port is allowed
+  if (!allowedPorts.includes(String(decoded.port))) {
+    throw new Error('Config must use a Cloudflare TLS Port (443, 8443, 2053, 2083, 2087, or 2096)');
+  }
+  
+  // Preserve the original "host" and "sni" values
+  const originalHost = decoded.host || '';
+  const originalSni = decoded.sni || decoded.host || '';
+  
+  // Set the port to 443 regardless of input config
+  decoded.port = 443;
+  
+  decoded.add = cleanIp; // Set clean IP for "address"
+  decoded.host = workerHost; // New worker host
+  decoded.sni = workerHost; // New worker SNI
+  
+  const originalPath = decoded.path || '';
+  decoded.path = `/${originalSni}${originalPath}`; // Concatenated path with original SNI
+  
+  const newConfig = 'vmess://' + btoa(JSON.stringify(decoded));
+  return newConfig;
+}
+
+// Process VLESS configuration
+function refineVless(config, cleanIp, workerHost, allowedPorts) {
+  const url = new URL(config);
+  
+  if (url.searchParams.get('type') !== 'ws') throw new Error('Network must be WebSocket (ws)');
+  if (url.searchParams.get('security') !== 'tls') throw new Error('Security must be TLS');
+  
+  // Check if the input port is allowed
+  if (!allowedPorts.includes(url.port)) {
+    throw new Error('Config must use a Cloudflare TLS Port (443, 8443, 2053, 2083, 2087, or 2096)');
+  }
+  
+  // Set the port to 443 regardless of input config
+  url.port = 443;
+  
+  url.hostname = cleanIp; // Set clean IP for "address"
+  
+  const originalHost = url.searchParams.get('host') || ''; // Original host
+  const originalPath = url.searchParams.get('path') || ''; // Original path
+  
+  url.searchParams.set('host', workerHost);
+  url.searchParams.set('sni', workerHost);
+  url.searchParams.set('path', `/${originalHost}${originalPath}`); // Concatenated path
+  
+  return url.toString();
+}
+
+// Process Trojan configuration
+function refineTrojan(config, cleanIp, workerHost, allowedPorts) {
+  const url = new URL(config);
+  
+  if (url.searchParams.get('type') !== 'ws') throw new Error('Network must be WebSocket (ws)');
+  if (url.searchParams.get('security') !== 'tls') throw new Error('Security must be TLS');
+  
+  // Check if the input port is allowed
+  if (!allowedPorts.includes(url.port)) {
+    throw new Error('Config must use a Cloudflare TLS Port (443, 8443, 2053, 2083, 2087, or 2096)');
+  }
+  
+  // Set the port to 443 regardless of input config
+  url.port = 443;
+  
+  url.hostname = cleanIp; // Set clean IP for "address"
+  
+  const originalHost = url.searchParams.get('host') || ''; // Original host
+  const originalPath = url.searchParams.get('path') || ''; // Original path
+  
+  url.searchParams.set('host', workerHost);
+  url.searchParams.set('sni', workerHost);
+  url.searchParams.set('path', `/${originalHost}${originalPath}`); // Concatenated path
+  
+  return url.toString();
+}
